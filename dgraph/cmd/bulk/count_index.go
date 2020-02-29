@@ -17,7 +17,6 @@
 package bulk
 
 import (
-	"bytes"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -49,24 +48,24 @@ type countIndexer struct {
 // addUid adds the uid from rawKey to a count index if a count index is
 // required by the schema. This method expects keys to be passed into it in
 // sorted order.
-func (c *countIndexer) addUid(rawKey []byte, count int) {
+func (c *countIndexer) addUid(rawKey []byte, count int) *bpb.KVList {
 	key, err := x.Parse(rawKey)
 	if err != nil {
 		fmt.Printf("Error while parsing key %s: %v\n", hex.Dump(rawKey), err)
-		return
+		return nil
 	}
 	if !key.IsData() && !key.IsReverse() {
-		return
+		return nil
 	}
 	sameIndexKey := key.Attr == c.cur.pred && key.IsReverse() == c.cur.rev
 	if sameIndexKey && !c.cur.track {
-		return
+		return nil
 	}
 
+	var kvs *bpb.KVList
 	if !sameIndexKey {
 		if len(c.counts) > 0 {
-			c.wg.Add(1)
-			go c.writeIndex(c.cur.pred, c.cur.rev, c.counts)
+			kvs = c.generateIndexKeys(c.cur.pred, c.cur.rev, c.counts)
 		}
 		if len(c.counts) > 0 || c.counts == nil {
 			c.counts = make(map[int][]uint64)
@@ -78,10 +77,12 @@ func (c *countIndexer) addUid(rawKey []byte, count int) {
 	if c.cur.track {
 		c.counts[count] = append(c.counts[count], key.Uid)
 	}
+
+	return kvs
 }
 
-func (c *countIndexer) writeIndex(pred string, rev bool, counts map[int][]uint64) {
-	defer c.wg.Done()
+func (c *countIndexer) generateIndexKeys(pred string, rev bool,
+	counts map[int][]uint64) *bpb.KVList {
 
 	streamId := atomic.AddUint32(&c.streamId, 1)
 	list := &bpb.KVList{}
@@ -100,12 +101,7 @@ func (c *countIndexer) writeIndex(pred string, rev bool, counts map[int][]uint64
 			StreamId: streamId,
 		})
 	}
-	sort.Slice(list.Kv, func(i, j int) bool {
-		return bytes.Compare(list.Kv[i].Key, list.Kv[j].Key) < 0
-	})
-	if err := c.writer.Write(list); err != nil {
-		x.Check(err)
-	}
+	return list
 }
 
 func (c *countIndexer) wait() {

@@ -328,13 +328,30 @@ func (r *reducer) startWriting(ci *countIndexer, writerCh chan *encodeRequest, c
 	for req := range writerCh {
 		req.wg.Wait()
 
+		var countList *bpb.KVList
 		for _, countKey := range req.countKeys {
-			ci.addUid(countKey.key, countKey.count)
+			countList = ci.addUid(countKey.key, countKey.count)
 		}
 		// Wait for it to be encoded.
 		start := time.Now()
 
-		x.Check(ci.writer.Write(req.list))
+		if countList != nil {
+			// Combine the count key-value pairs in countList and req.list and sort
+			// the resulting list. This must be done so that the keys are written in
+			// order to the stream writer.
+			countList.Kv = append(countList.Kv, req.list.Kv...)
+			sort.Slice(countList.Kv, func(i, j int) bool {
+				return bytes.Compare(countList.Kv[i].Key, countList.Kv[j].Key) < 0
+			})
+			x.Check(ci.writer.Write(countList))
+		} else {
+			// No count indices were created so req.list can be written directly.
+			sort.Slice(req.list.Kv, func(i, j int) bool {
+				return bytes.Compare(req.list.Kv[i].Key, req.list.Kv[j].Key) < 0
+			})
+			x.Check(ci.writer.Write(req.list))
+		}
+
 		if dur := time.Since(start).Round(time.Millisecond); dur > time.Second {
 			fmt.Printf("writeCh: Time taken to write req: %v\n",
 				time.Since(start).Round(time.Millisecond))
